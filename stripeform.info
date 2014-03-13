@@ -1,0 +1,5 @@
+name = Stripe Form
+description = A sample integration of Stripe and Drupal FAPI
+core = 7.x
+package = Other
+dependencies[] = libraries

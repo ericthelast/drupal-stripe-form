@@ -1,0 +1,217 @@
+<?php
+
+define('STRIPEFORM_PUB_KEY', '');
+define('STRIPEFORM_PRIVATE_KEY', '');
+
+/**
+ * Implements hook_menu().
+ */
+function stripeform_menu() {
+  $items = array();
+
+  $items['stripeform'] = array(
+    'title' => 'Stripe Form',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('stripeform_form'),
+    'access callback' => TRUE,
+  );
+
+  return $items;
+}
+
+/**
+ * Sample Stripe Form.
+ */
+function stripeform_form($form, &$form_state) {
+
+  // Let's make sure you have the stripe library installed.
+  if($path = libraries_get_path('stripe')) {
+    if(!is_file($path . '/lib/Stripe.php')) {
+      form_set_error('form', t('You need to install the stripe library from !link before you can use this form.', array('!link' => l('here', 'https://stripe.com/docs/libraries'))));
+    }
+  } else {
+    form_set_error('form', t('You need to install the stripe library from !link before you can use this form.', array('!link' => l('here', 'https://stripe.com/docs/libraries'))));
+  }
+
+  $setting = array();
+  $setting['stripeform'] = array(
+    'pubkey' => STRIPEFORM_PUB_KEY,
+    'form_selector' => str_replace('_', '-', __FUNCTION__),
+  );
+
+  $form['#attached'] = array(
+    'js' => array(
+      array('data' => $setting, 'type' => 'setting'),
+    ),
+    'library' => array(
+      array('stripeform', 'stripe'),
+    ),
+  );
+
+  $form['stripeToken'] = array(
+    '#type' => 'hidden',
+    '#value' => !empty($form_state['input']['stripeToken']) ? $form_state['input']['stripeToken'] : NULL,
+  );
+
+  $form['amount'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Amount to charge'),
+    '#description' => t('NOTE: Normally, you would calculate amount on the back end unless the user really can choose their own amount'),
+    '#size' => 6,
+    '#required' => TRUE,
+  );
+
+  $form['credit_card'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Credit Card Information'),
+  );
+
+  $cc = &$form['credit_card'];
+
+  $cc['card_number'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Credit Card Number'),
+    '#pre_render' => array('stripeform_remove_name'),
+    '#attributes' => array(
+      'size' => 20,
+      'data-stripe' => 'number',
+    ),
+  );
+
+  $cc['exp_month'] = array(
+    '#type' => 'select',
+    '#title' => t('Expiration Month'),
+    '#options' => drupal_map_assoc(array(1,2,3,4,5,6,7,8,9,10,11,12)),
+    '#pre_render' => array('stripeform_remove_name'),
+    '#attributes' => array(
+      'data-stripe' => 'exp-month',
+    ),
+    '#empty_option' => t('- Select -'),
+  );
+
+  $cc['exp_year'] = array(
+    '#type' => 'select',
+    '#title' => t('Expiration Year'),
+    '#options' => array(),
+    '#pre_render' => array('stripeform_remove_name'),
+    '#attributes' => array(
+      'data-stripe' => 'exp-year',
+    ),
+    '#empty_option' => t('- Select -'),
+  );
+
+  $year = date('Y');
+  for($i = $year; $i <= ($year + 10); $i++) {
+    $cc['exp_year']['#options'][$i] = $i;
+  }
+
+  $cc['cvc'] = array(
+    '#type' => 'textfield',
+    '#title' => t('CVC Number'),
+    '#pre_render' => array('stripeform_remove_name'),
+    '#attributes' => array(
+      'size' => 4,
+      'data-stripe' => 'cvc',
+    ),
+  );
+
+  $cc['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Charge It'),
+    '#attributes' => array(
+      'class' => array('btn', 'btn-large', 'btn-primary'),
+    ),
+  );
+
+  // Adds our validation at the end of the build process.
+  $form['#after_build'][] = 'stripeform_add_final_validation';
+
+  return $form;
+}
+
+/**
+ * Tries to add final validation after all else has been added through alters.
+ */
+function stripeform_add_final_validation($form) {
+  $form['#validate'][] = 'stripeform_validate_form_payment';
+  return $form;
+}
+
+/**
+ * Form validation callback.
+ */
+function stripeform_checkout_form_validate($form, &$form_state) {
+  // Validate normal form elements as needed.
+}
+
+/**
+ * Processes the stripe payment.
+ *
+ * We do this here so that if the payment fails,
+ * we're still in a validation stage and can return
+ * early.  If success, we'll pass the charge on
+ * to the submission callback.
+ */
+function stripeform_validate_form_payment($form, &$form_state) {
+  if($errors = form_get_errors()) {
+    return;
+  }
+  $path = libraries_get_path('stripe');
+  require_once($path . '/lib/Stripe.php');
+
+  Stripe::setApiKey(STRIPEFORM_PRIVATE_KEY);
+
+  $token = $form_state['values']['stripeToken'];
+  $amount = $form_state['values']['amount'] * 100;
+
+  // Create the charge on Stripe's servers - this will charge the user's card
+  try {
+    $charge = Stripe_Charge::create(array(
+      "amount" => $amount,
+      "currency" => "usd",
+      "card" => $token,
+      "description" => 'test charge',
+    ));
+    
+    $form_state['stripeform_charge'] = $charge;
+  } catch(Stripe_CardError $e) {
+     // The card has been declined
+     watchdog('stripeform', $e->getMessage());
+     form_set_error('form', $e->getMessage());
+  }
+}
+
+/**
+ * Form submission handler.
+ */
+function stripeform_form_submit($form, &$form_state) {
+  drupal_set_message('Charge successful!');
+}
+
+/**
+ * FAPI #pre_render callback.
+ *
+ * Removes the name field form a form element.
+ */
+function stripeform_remove_name($element) {
+  unset($element['#name']);
+  return $element;
+}
+
+/**
+ * Implements hook_library().
+ */
+function stripeform_library() {
+  $module_path = drupal_get_path('module', 'stripeform');
+
+  $items['stripe'] = array(
+    'title' => t('Stripe'),
+    'version' => '1.0',
+    'js' => array(
+      'https://js.stripe.com/v1/' => array(),
+      $module_path . '/js/stripe.js' => array(),
+    ),
+  );
+
+  return $items;
+}
